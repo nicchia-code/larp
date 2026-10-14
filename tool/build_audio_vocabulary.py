@@ -18,11 +18,12 @@ Output in --out, rows in the same order:
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import subprocess
 import tempfile
+import uuid
 import wave
-from pathlib import Path
-
 import numpy as np
 
 SAMPLE_RATE = 16_000
@@ -59,13 +60,30 @@ def read_wav(path):
 
 def synthesize(word, voice, workdir):
     """Speaks `word` with macOS `say` and returns it as mono 16 kHz audio."""
-    aiff, wav = workdir / "say.aiff", workdir / "say.wav"
-    subprocess.run(["say", "-v", voice, "-o", str(aiff), word], check=True)
-    subprocess.run(
-        ["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(aiff), str(wav)],
-        check=True,
-    )
-    return read_wav(wav)
+    wav = workdir / f"{uuid.uuid4().hex}.wav"
+    cmd = [
+        "say",
+        "-v",
+        voice,
+        "--file-format=WAVE",
+        "--data-format=LEI16@16000",
+        "-o",
+        str(wav),
+        "--",
+        word,
+    ]
+    for attempt in range(3):
+        try:
+            subprocess.run(cmd, check=True, timeout=10)
+            break
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+            wav.unlink(missing_ok=True)
+            if attempt == 2:
+                raise
+    try:
+        return read_wav(wav)
+    finally:
+        wav.unlink(missing_ok=True)
 
 
 def audio_token_count(mask):
@@ -134,22 +152,56 @@ def write_entry(tsv, bin_file, word, lang, male, female):
 def build(args):
     embedder = Embedder(args.model_dir)
     args.out.mkdir(parents=True, exist_ok=True)
+    tsv_path = args.out / "audio_vocabulary.tsv"
+    bin_path = args.out / "audio_vocabulary.f32"
+
+    existing_counts = {"it": 0, "en": 0}
+    if tsv_path.exists() and bin_path.exists():
+        with open(tsv_path, encoding="utf-8") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) == 2 and parts[1] in existing_counts:
+                    existing_counts[parts[1]] += 1
+        valid_entries = sum(existing_counts.values())
+        expected_bin_bytes = valid_entries * 2 * DIM * 4
+        actual_bin_bytes = bin_path.stat().st_size
+        if actual_bin_bytes != expected_bin_bytes:
+            raise RuntimeError(
+                f"Resume check failed: TSV has {valid_entries} entries but binary is {actual_bin_bytes} bytes "
+                f"(expected {expected_bin_bytes})."
+            )
+        print(f"Resuming: found {existing_counts['it']} it words and {existing_counts['en']} en words", flush=True)
+
+    mode_tsv = "a" if existing_counts["it"] > 0 or existing_counts["en"] > 0 else "w"
+    mode_bin = "ab" if existing_counts["it"] > 0 or existing_counts["en"] > 0 else "wb"
+
     with tempfile.TemporaryDirectory() as tmp, \
-            open(args.out / "audio_vocabulary.tsv", "w", encoding="utf-8") as tsv, \
-            open(args.out / "audio_vocabulary.f32", "wb") as bin_file:
+            open(tsv_path, mode_tsv, encoding="utf-8") as tsv, \
+            open(bin_path, mode_bin) as bin_file, \
+            ThreadPoolExecutor(max_workers=6) as pool:
         workdir = Path(tmp)
         for lang, words_path in (("it", args.it_words), ("en", args.en_words)):
-            words = read_words(words_path, DEFAULT_COUNTS[lang])
-            print(f"{lang}: {len(words)} words", flush=True)
+            all_words = read_words(words_path, DEFAULT_COUNTS[lang])
+            skip = existing_counts[lang]
+            words = all_words[skip:]
+            print(f"{lang}: {len(all_words)} words total, skipping {skip}, {len(words)} to process", flush=True)
+            if not words:
+                continue
             male_voice, female_voice = VOICES[lang]
-            for i, word in enumerate(words, 1):
-                male = embedder.embed(synthesize(word, male_voice, workdir))
-                female = embedder.embed(synthesize(word, female_voice, workdir))
-                write_entry(tsv, bin_file, word, lang, male, female)
-                if i % 1000 == 0:
-                    print(f"{lang}: {i}", flush=True)
-
-
+            batch_size = 64
+            for start in range(0, len(words), batch_size):
+                batch = words[start:start + batch_size]
+                male_futs = [pool.submit(synthesize, w, male_voice, workdir) for w in batch]
+                female_futs = [pool.submit(synthesize, w, female_voice, workdir) for w in batch]
+                for w, mf, ff in zip(batch, male_futs, female_futs):
+                    male = embedder.embed(mf.result())
+                    female = embedder.embed(ff.result())
+                    write_entry(tsv, bin_file, w, lang, male, female)
+                done = skip + min(start + batch_size, len(words))
+                if done % 1000 == 0 or done == len(all_words):
+                    tsv.flush()
+                    bin_file.flush()
+                    print(f"{lang}: {done}", flush=True)
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model-dir", type=Path, required=True)

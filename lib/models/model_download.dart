@@ -21,7 +21,10 @@ class ModelFile {
 
 /// Base URL of the GitHub Release holding the audio vocabulary, set at build time:
 /// `--dart-define=AUDIO_VOCABULARY_RELEASE_URL=<release download folder>`.
-const audioVocabularyReleaseUrl = String.fromEnvironment('AUDIO_VOCABULARY_RELEASE_URL');
+const audioVocabularyReleaseUrl = String.fromEnvironment(
+  'AUDIO_VOCABULARY_RELEASE_URL',
+  defaultValue: 'https://github.com/nicchia-code/larp/releases/download/audio-vocabulary-v1',
+);
 
 // The int8 variant of EmbeddingGemma 2 from Hugging Face, and the audio vocabulary.
 // ponytail: file paths inside the Hugging Face repo assumed to sit under onnx/.
@@ -46,9 +49,8 @@ List<ModelFile> get modelFiles => [
     'https://huggingface.co/onnx-community/embeddinggemma-2-ONNX/resolve/main/onnx/model_quantized.onnx_data',
     313724928,
   ),
-  // ponytail: vocabulary sizes stay null until the vocabulary is generated and published; set them then.
-  ModelFile('audio_vocabulary.tsv', _releaseFile('audio_vocabulary.tsv'), null),
-  ModelFile('audio_vocabulary.f32', _releaseFile('audio_vocabulary.f32'), null),
+  ModelFile('audio_vocabulary.tsv', _releaseFile('audio_vocabulary.tsv'), 801394),
+  ModelFile('audio_vocabulary.f32', _releaseFile('audio_vocabulary.f32'), 430080000),
 ];
 
 String _releaseFile(String name) =>
