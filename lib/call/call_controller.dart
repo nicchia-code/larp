@@ -10,6 +10,9 @@ import '../last_transcript.dart';
 import '../models/model_download.dart';
 import '../transcription/transcribe_call.dart';
 
+/// Shown under Download fallito: the error text itself is for the developer, on stderr.
+const _downloadFailedMessage = 'Il download dei modelli non è riuscito. Controlla la connessione e riprova.';
+
 /// Call states of this part of the Model: Waiting for models, Ready, Recording, Transcribing, Transcript available,
 /// Transcription failed, Closed.
 enum CallState {
@@ -104,7 +107,7 @@ class CallController extends ChangeNotifier {
   int get downloadReceived => _downloadReceived;
   int get downloadTotal => _downloadTotal;
 
-  /// Error of the last failed download; meaningful in Download failed.
+  /// Message in Italian of the last failed download; meaningful in Download failed. The error itself goes to stderr.
   String? get downloadError => _downloadError;
 
   /// Time since the recording started; meaningful while Recording.
@@ -161,7 +164,8 @@ class CallController extends ChangeNotifier {
     } catch (e) {
       if (_state != CallState.downloading) return;
       downloader.discard();
-      _downloadError = '$e';
+      stderr.writeln('Download dei modelli fallito: $e');
+      _downloadError = _downloadFailedMessage;
       _state = CallState.downloadFailed;
       notifyListeners();
       return;

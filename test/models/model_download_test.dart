@@ -130,7 +130,7 @@ void main() {
     await controller.downloadModels();
 
     expect(controller.state, CallState.downloadFailed);
-    expect(controller.downloadError, isNotNull);
+    expect(controller.downloadError, 'Il download dei modelli non è riuscito. Controlla la connessione e riprova.');
     expect(dir.listSync(), isEmpty);
     controller.dispose();
   });
